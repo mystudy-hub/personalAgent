@@ -6,6 +6,8 @@ from contextlib import closing
 from pathlib import Path
 
 from core.task_manager import SCHEMA, Conflict, TaskManager
+from core.orchestrator import PlanParameters, build_plan
+from core.worker_protocol import CodingResult, ReviewResult, candidate_digest, simulate_role
 
 
 class TaskManagerTests(unittest.TestCase):
@@ -103,6 +105,34 @@ class TaskManagerTests(unittest.TestCase):
         task = self.manager.get_task("old")
         self.assertEqual((task["status"], task["checkpoint"], task["version"]), ("CREATED", 0, 1))
         self.assertEqual(self.manager.events("old", 0, 100)[0]["kind"], "task.created")
+
+    def test_review_returns_incomplete_evidence_and_blocks_at_round_limit(self):
+        self.manager.migrate()
+        project = self.manager.register_project("Fixture", self.path)
+        parameters = PlanParameters(project_id=project["id"], template="csv_blank_line",
+                                    source_file="csv_import.py", test="unittest")
+        task, _ = self.manager.submit(project["id"], "review", "CSV", "Repair",
+                                      plan=build_plan(project["id"], parameters))
+        research = self.manager.claim("worker", 5)
+        self.manager.advance(research, 5, finished=True, result=simulate_role("research", None))
+        for round_number in (1, 2):
+            coding = self.manager.claim("worker", 5)
+            change = f"candidate {round_number}"
+            result = CodingResult(source_file="csv_import.py", change=change,
+                                  digest=candidate_digest(change))
+            self.manager.advance(coding, 5, finished=True, result=result)
+            review = self.manager.claim("worker", 5)
+            self.manager.advance(review, 5, finished=True, result=ReviewResult(
+                candidate_id=coding.id, verdict="pass", reason="Reviewer overlooked missing evidence",
+            ))
+            self.assertEqual(self.manager.get_task(task["id"])["checkpoint"], 1)
+        summary = self.manager.summary(task["id"])
+        self.assertEqual((summary["status"], summary["review_round"]), ("BLOCKED", 2))
+        self.assertIn("missing runtime test evidence", summary["blocked_reason"])
+        reviews = [artifact for artifact in summary["artifacts"] if artifact["node_id"] == "review"]
+        self.assertEqual([review["payload"]["verdict"] for review in reviews], ["revise", "revise"])
+        self.assertEqual(len({review["payload"]["candidate_id"] for review in reviews}), 2)
+        self.assertIsNone(self.manager.claim("worker", 5))
 
 
 if __name__ == "__main__":

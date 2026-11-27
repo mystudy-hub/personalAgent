@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from pydantic import ValidationError
+
+from core.worker_protocol import CodingResult, RESULT_TYPES, evidence_problem
+
 
 SCHEMA = (
     """CREATE TABLE projects (
@@ -44,7 +48,21 @@ EXECUTION_SCHEMA = (
     "CREATE INDEX tasks_queue ON tasks(status)",
     "CREATE INDEX attempts_expiry ON attempts(lease_until) WHERE outcome IS NULL",
 )
+PLAN_SCHEMA = "ALTER TABLE tasks ADD COLUMN plan TEXT"
+ROLE_SCHEMA = (
+    "ALTER TABLE tasks ADD COLUMN model_plan INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN model_calls INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN review_round INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN blocked_reason TEXT",
+    """CREATE TABLE artifacts (
+        attempt_id TEXT PRIMARY KEY REFERENCES attempts(id),
+        task_id TEXT NOT NULL REFERENCES tasks(id),
+        node_id TEXT NOT NULL, payload TEXT NOT NULL
+    )""",
+    "CREATE INDEX artifacts_by_task ON artifacts(task_id, node_id)",
+)
 TERMINAL = {"SUCCEEDED", "CANCELLED", "FAILED"}
+ACTIVE = {"RUNNING", "PLANNING", "REVIEWING"}
 SIMULATED_STEPS = 2
 
 
@@ -52,6 +70,7 @@ SIMULATED_STEPS = 2
 class Attempt:
     id: str
     task_id: str
+    node_id: str | None = None
 
 
 class Conflict(Exception):
@@ -59,9 +78,10 @@ class Conflict(Exception):
 
 
 class TaskManager:
-    def __init__(self, database: Path, *, clock=time.time):
+    def __init__(self, database: Path, *, clock=time.time, review_limit=2):
         self.database = database
         self.clock = clock
+        self.review_limit = review_limit
 
     @contextmanager
     def connection(self, *, write=False):
@@ -91,16 +111,27 @@ class TaskManager:
             if version == 1:
                 for statement in EXECUTION_SCHEMA:
                     db.execute(statement)
-                db.execute("PRAGMA user_version = 2")
-            elif version != 2:
+                version = 2
+            if version == 2:
+                db.execute(PLAN_SCHEMA)
+                version = 3
+            if version == 3:
+                for statement in ROLE_SCHEMA:
+                    db.execute(statement)
+                db.execute("PRAGMA user_version = 4")
+            elif version != 4:
                 raise RuntimeError(f"Unsupported database schema version: {version}")
+
+    @staticmethod
+    def _task(row):
+        return dict(row) | {"plan": json.loads(row["plan"]) if row["plan"] is not None else None}
 
     @staticmethod
     def _load(db, task_id):
         row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:
             raise KeyError(task_id)
-        return dict(row)
+        return TaskManager._task(row)
 
     @staticmethod
     def _event(db, task, kind, **details):
@@ -113,8 +144,9 @@ class TaskManager:
         db.execute(
             """UPDATE tasks SET status=:status, version=:version, checkpoint=:checkpoint,
             pending_action=:pending_action, resume_status=:resume_status,
-            active_attempt_id=:active_attempt_id WHERE id=:id""",
-            task,
+            active_attempt_id=:active_attempt_id, plan=:stored_plan, model_calls=:model_calls,
+            review_round=:review_round, blocked_reason=:blocked_reason WHERE id=:id""",
+            task | {"stored_plan": json.dumps(task["plan"]) if task["plan"] is not None else None},
         )
         self._event(db, task, kind, **(detail or {}))
         return task
@@ -136,7 +168,12 @@ class TaskManager:
         with self.connection() as db:
             return [dict(row) for row in db.execute("SELECT id, name, path FROM projects ORDER BY name, id")]
 
-    def submit(self, project_id: str, key: str, title: str, goal: str) -> tuple[dict, bool]:
+    def project_exists(self, project_id: str) -> bool:
+        with self.connection() as db:
+            return db.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is not None
+
+    def submit(self, project_id: str, key: str, title: str, goal: str, *,
+               plan=None, model_plan: bool = False) -> tuple[dict, bool]:
         with self.connection(write=True) as db:
             if db.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
                 raise KeyError(project_id)
@@ -145,16 +182,22 @@ class TaskManager:
                 (project_id, key),
             ).fetchone()
             if current is not None:
-                if (current["title"], current["goal"]) != (title, goal):
+                task = self._task(current)
+                comparable_plan = None if task["model_plan"] else task["plan"]
+                if (task["title"], task["goal"], comparable_plan, bool(task["model_plan"])) != (
+                    title, goal, plan, model_plan
+                ):
                     raise Conflict("Submission key already binds a different task")
-                return dict(current), False
+                return task, False
             task = {
                 "id": uuid4().hex, "project_id": project_id, "submission_key": key,
                 "title": title, "goal": goal, "status": "CREATED", "version": 1,
+                "plan": json.dumps(plan) if plan is not None else None,
+                "model_plan": model_plan,
             }
             db.execute(
-                """INSERT INTO tasks (id, project_id, submission_key, title, goal, status, version)
-                VALUES (:id, :project_id, :submission_key, :title, :goal, :status, :version)""",
+                """INSERT INTO tasks (id, project_id, submission_key, title, goal, status, version, plan, model_plan)
+                VALUES (:id, :project_id, :submission_key, :title, :goal, :status, :version, :plan, :model_plan)""",
                 task,
             )
             task = self._load(db, task["id"])
@@ -167,7 +210,7 @@ class TaskManager:
 
     def list_tasks(self, limit: int) -> list[dict]:
         with self.connection() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM tasks ORDER BY rowid DESC LIMIT ?", (limit,))]
+            return [self._task(row) for row in db.execute("SELECT * FROM tasks ORDER BY rowid DESC LIMIT ?", (limit,))]
 
     def control(self, task_id: str, action: str) -> dict:
         with self.connection(write=True) as db:
@@ -176,7 +219,7 @@ class TaskManager:
             if status in TERMINAL:
                 return task
             if action == "cancel":
-                if status == "RUNNING":
+                if status in ACTIVE:
                     if pending == "cancel":
                         return task
                     return self._transition(db, task, "task.cancel_requested", pending_action="cancel")
@@ -187,29 +230,70 @@ class TaskManager:
                     raise Conflict("Task cancellation is pending")
                 if status == "PAUSED" or pending == "pause":
                     return task
-                if status == "RUNNING":
+                if status in ACTIVE:
                     return self._transition(db, task, "task.pause_requested", pending_action="pause")
-                if status in ("CREATED", "READY"):
+                if status in ("CREATED", "READY", "WAITING_APPROVAL"):
                     return self._transition(db, task, "task.paused", status="PAUSED", resume_status=status)
             if action == "resume" and status == "PAUSED":
                 return self._transition(db, task, "task.resumed", status=task["resume_status"], resume_status=None)
             raise Conflict(f"Cannot {action} task in {status}")
 
-    def _close_attempt(self, db, task, attempt_id, outcome, now, *, checkpoint=None):
+    @staticmethod
+    def _node_id(task):
+        if task["status"] == "PLANNING":
+            return "main"
+        if task["plan"]:
+            return task["plan"]["nodes"][task["checkpoint"]]["id"]
+        return None
+
+    @staticmethod
+    def _artifact(db, task_id, node_id):
+        row = db.execute(
+            """SELECT attempt_id, node_id, payload FROM artifacts WHERE task_id=? AND node_id=?
+            ORDER BY rowid DESC LIMIT 1""", (task_id, node_id),
+        ).fetchone()
+        return dict(row) | {"payload": json.loads(row["payload"])} if row is not None else None
+
+    def role_input(self, attempt: Attempt) -> dict | None:
+        dependency = {"coding": "research", "review": "coding"}.get(attempt.node_id)
+        if dependency is None:
+            return None
+        with self.connection() as db:
+            return self._artifact(db, attempt.task_id, dependency)
+
+    def summary(self, task_id: str) -> dict:
+        with self.connection() as db:
+            task = self._load(db, task_id)
+            rows = db.execute(
+                "SELECT attempt_id, node_id, payload FROM artifacts WHERE task_id=? ORDER BY rowid",
+                (task_id,),
+            )
+            artifacts = [dict(row) | {"payload": json.loads(row["payload"])} for row in rows]
+            return {key: task[key] for key in ("id", "status", "checkpoint", "review_round",
+                                               "blocked_reason", "model_calls")} | {"artifacts": artifacts}
+
+    def _close_attempt(self, db, task, attempt_id, outcome, now, *, checkpoint=None, **overrides):
         db.execute("UPDATE attempts SET outcome=?, finished_at=? WHERE id=?", (outcome, now, attempt_id))
         pending = task["pending_action"]
         next_checkpoint = task["checkpoint"] if checkpoint is None else checkpoint
-        status = "READY"
+        status = "CREATED" if task["status"] == "PLANNING" else "READY"
         if pending == "cancel":
             status = "CANCELLED"
-        elif next_checkpoint == SIMULATED_STEPS:
+        elif task["plan"] and next_checkpoint == len(task["plan"]["nodes"]):
+            status = "WAITING_APPROVAL"
+        elif not task["plan"] and next_checkpoint == SIMULATED_STEPS:
             status = "SUCCEEDED"
         elif pending == "pause":
+            overrides.setdefault("resume_status", status)
             status = "PAUSED"
+        detail = {"attempt_id": attempt_id}
+        node_id = self._node_id(task)
+        if node_id:
+            detail["node_id"] = node_id
+        updates = {"status": status, "checkpoint": next_checkpoint, "pending_action": None,
+                   "active_attempt_id": None, "resume_status": None}
         return self._transition(
-            db, task, f"attempt.{outcome}", detail={"attempt_id": attempt_id}, status=status,
-            checkpoint=next_checkpoint, pending_action=None, active_attempt_id=None,
-            resume_status="READY" if status == "PAUSED" else None,
+            db, task, f"attempt.{outcome}", detail=detail, **(updates | overrides),
         )
 
     def claim(self, worker: str, lease_seconds: float) -> Attempt | None:
@@ -226,34 +310,102 @@ class TaskManager:
             ).fetchone()
             if row is None:
                 return None
-            task = dict(row)
+            task = self._task(row)
             if task["status"] == "CREATED":
                 task = self._transition(db, task, "task.planning", status="PLANNING")
-                task = self._transition(db, task, "task.ready", status="READY")
-            attempt = Attempt(uuid4().hex, task["id"])
+                if not task["model_plan"] or task["plan"] is not None:
+                    task = self._transition(db, task, "task.ready", status="READY")
+            node_id = self._node_id(task)
+            attempt = Attempt(uuid4().hex, task["id"], node_id)
             db.execute(
                 """INSERT INTO attempts (id, task_id, worker, checkpoint, lease_until, started_at)
                 VALUES (?, ?, ?, ?, ?, ?)""",
                 (attempt.id, attempt.task_id, worker, task["checkpoint"], now + lease_seconds, now),
             )
-            self._transition(db, task, "attempt.claimed", status="RUNNING", active_attempt_id=attempt.id,
-                             detail={"attempt_id": attempt.id, "worker": worker})
+            detail = {"attempt_id": attempt.id, "worker": worker}
+            if node_id:
+                detail["node_id"] = node_id
+            status = {"main": "PLANNING", "review": "REVIEWING"}.get(node_id, "RUNNING")
+            self._transition(db, task, "attempt.claimed", status=status, active_attempt_id=attempt.id,
+                             detail=detail)
             return attempt
 
-    def advance(self, attempt: Attempt, lease_seconds: float, *, finished=False, release=False) -> bool:
-        """Advance a live attempt. Return whether the Worker should keep running."""
+    def _live_task(self, db, attempt, now):
+        task = self._load(db, attempt.task_id)
+        if task["status"] not in ACTIVE or task["active_attempt_id"] != attempt.id:
+            return None
+        lease = db.execute("SELECT lease_until FROM attempts WHERE id = ?", (attempt.id,)).fetchone()
+        return task if lease["lease_until"] > now else None
+
+    def reserve_main_call(self, attempt: Attempt) -> bool:
+        with self.connection(write=True) as db:
+            task = self._live_task(db, attempt, self.clock())
+            if (task is None or task["status"] != "PLANNING" or task["pending_action"] == "cancel"
+                    or task["model_calls"] >= 2):
+                return False
+            self._transition(db, task, "main.call_reserved", model_calls=task["model_calls"] + 1)
+            return True
+
+    def _finish_role(self, db, task, attempt, result, now):
+        node_id = self._node_id(task)
+        if node_id == "main":
+            if result is None or "plan" not in result:
+                reason = result.get("error", "Main did not produce a plan") if result else "Main did not produce a plan"
+                self._close_attempt(db, task, attempt.id, "blocked", now, status="BLOCKED",
+                                    blocked_reason=reason, resume_status=None)
+            else:
+                paused = task["pending_action"] == "pause"
+                self._close_attempt(db, task, attempt.id, "completed", now, plan=result["plan"],
+                                    status="PAUSED" if paused else "READY",
+                                    resume_status="READY" if paused else None)
+            return
+        if node_id is None:
+            self._close_attempt(db, task, attempt.id, "completed", now, checkpoint=task["checkpoint"] + 1)
+            return
+        try:
+            output = RESULT_TYPES[node_id].model_validate(result)
+        except ValidationError:
+            self._close_attempt(db, task, attempt.id, "blocked", now, status="BLOCKED",
+                                blocked_reason=f"Invalid {node_id} result", resume_status=None)
+            return
+        if node_id == "review":
+            candidate = self._artifact(db, task["id"], "coding")
+            if candidate is None or output.candidate_id != candidate["attempt_id"]:
+                self._close_attempt(db, task, attempt.id, "blocked", now, status="BLOCKED",
+                                    blocked_reason="Review did not identify the current candidate", resume_status=None)
+                return
+            problem = evidence_problem(CodingResult.model_validate(candidate["payload"]))
+            if problem and output.verdict == "pass":
+                output = output.model_copy(update={"verdict": "revise", "reason": problem})
+        db.execute("INSERT INTO artifacts VALUES (?, ?, ?, ?)",
+                   (attempt.id, task["id"], node_id, output.model_dump_json()))
+        if node_id == "review" and output.verdict == "revise":
+            rounds = task["review_round"] + 1
+            blocked = rounds >= self.review_limit
+            paused = not blocked and task["pending_action"] == "pause"
+            self._close_attempt(
+                db, task, attempt.id, "returned", now, checkpoint=1, review_round=rounds,
+                status="BLOCKED" if blocked else "PAUSED" if paused else "READY",
+                resume_status="READY" if paused else None,
+                blocked_reason=output.reason if blocked else None,
+            )
+        else:
+            self._close_attempt(db, task, attempt.id, "completed", now, checkpoint=task["checkpoint"] + 1)
+
+    def advance(self, attempt: Attempt, lease_seconds: float, *, finished=False, release=False,
+                result=None, settling=False) -> bool:
+        """Advance a live attempt. A settling caller closes its stream before acknowledging cancellation."""
         with self.connection(write=True) as db:
             now = self.clock()
-            task = self._load(db, attempt.task_id)
-            if task["status"] != "RUNNING" or task["active_attempt_id"] != attempt.id:
-                return False
-            lease = db.execute("SELECT lease_until FROM attempts WHERE id = ?", (attempt.id,)).fetchone()
-            if lease["lease_until"] <= now:
+            task = self._live_task(db, attempt, now)
+            if task is None:
                 return False
             if task["pending_action"] == "cancel":
+                if settling:
+                    return False
                 self._close_attempt(db, task, attempt.id, "cancelled", now)
             elif finished:
-                self._close_attempt(db, task, attempt.id, "completed", now, checkpoint=task["checkpoint"] + 1)
+                self._finish_role(db, task, attempt, result, now)
             elif release:
                 self._close_attempt(db, task, attempt.id, "released", now)
             else:
