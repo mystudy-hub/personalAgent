@@ -158,3 +158,20 @@ Topics: [docs/01-项目建设规划书.md](../../../docs/01-%E9%A1%B9%E7%9B%AE%E
 ### Git Commits
 
 (No associated commits)
+
+
+## Session 10: Windows MXC 基础沙箱复验通过
+<!-- trellis-session: v=3 fp=2161e4552aad98d0 -->
+
+**Date**: 2026-11-27
+**Task**: Windows MXC 基础沙箱复验通过
+**Branch**: `main`
+
+### Summary
+
+Windows 11 25H2 构建 26200.9711，CLI 0.170.0 通过官方 MXC 启动检查。桌面版 CLI 在关闭命令网络和最小文件权限下通过授权读写、外部文件阻断及回环阻断。真实 Windows Worker 与运行时测试待验收，WSL2 已通过样例集成。
+Topics: [docs/01-项目建设规划书.md](../../../docs/01-%E9%A1%B9%E7%9B%AE%E5%BB%BA%E8%AE%BE%E8%A7%84%E5%88%92%E4%B9%A6.md)
+
+### Git Commits
+
+(No associated commits)
