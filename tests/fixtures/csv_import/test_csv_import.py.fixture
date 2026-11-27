@@ -1,0 +1,36 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from csv_import import import_csv
+
+
+class CsvImportTests(unittest.TestCase):
+    def import_text(self, contents: str) -> list[list[str]]:
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:
+            path = Path(directory) / "input.csv"
+            path.write_bytes(contents.encode("utf-8"))
+            return import_csv(path)
+
+    def test_skips_empty_line_between_records(self):
+        path = Path(__file__).with_name("records.csv")
+        self.assertEqual(import_csv(path), [["1", "first"], ["2", "second"]])
+
+    def test_reads_records_without_empty_lines(self):
+        self.assertEqual(
+            self.import_text("id,note\n1,first\n2,second\n"),
+            [["1", "first"], ["2", "second"]],
+        )
+
+    def test_preserves_delimited_empty_fields(self):
+        self.assertEqual(self.import_text("id,note\n,\n1,\n"), [["", ""], ["1", ""]])
+
+    def test_preserves_blank_line_inside_quoted_field(self):
+        self.assertEqual(
+            self.import_text('id,note\n1,"first\n\nlast"\n2,second\n'),
+            [["1", "first\n\nlast"], ["2", "second"]],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
