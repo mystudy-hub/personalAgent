@@ -192,3 +192,54 @@ Topics: [docs/01-项目建设规划书.md](../../../docs/01-%E9%A1%B9%E7%9B%AE%E
 ### Git Commits
 
 (No associated commits)
+
+
+## Session 12: 完成 M2 Agent 协作与审查验收
+<!-- trellis-session: v=3 fp=d1e66b36cea40e27 -->
+
+**Date**: 2026-11-27
+**Task**: 完成 M2 Agent 协作与审查验收
+**Branch**: `main`
+
+### Summary
+
+Chat/Main 通过本机 Responses 测试服务及真实 WSL API 合成提示验证。固定计划可纠错一次，越权或无效参数阻塞。模拟 Research、Coding、Review 保存产物，校验候选证据，审查退回达到上限阻塞。完整测试 8 项通过。
+Topics: [docs/01-项目建设规划书.md](../../../docs/01-%E9%A1%B9%E7%9B%AE%E5%BB%BA%E8%AE%BE%E8%A7%84%E5%88%92%E4%B9%A6.md)
+
+### Git Commits
+
+(No associated commits)
+
+
+## Session 13: 确认 M3 Windows 控制服务与专用 WSL2 Worker
+<!-- trellis-session: v=3 fp=cd5ae78e746718b7 -->
+
+**Date**: 2026-11-27
+**Task**: 确认 M3 Windows 控制服务与专用 WSL2 Worker
+**Branch**: `main`
+
+### Summary
+
+采纳跨边界执行优先验收，Windows 保管状态、审批及 Git，专用 WSL2 非 root Worker 使用字节流。首版直连 Codex，推迟 OpenHands，对第二种 Coding Agent 的实际需求再评估 ACP 客户端。规划已更新，环境与集成待验收。
+Topics: [docs/01-项目建设规划书.md](../../../docs/01-%E9%A1%B9%E7%9B%AE%E5%BB%BA%E8%AE%BE%E8%A7%84%E5%88%92%E4%B9%A6.md)
+
+### Git Commits
+
+(No associated commits)
+
+
+## Session 14: 修复 M2 模型断流与取消
+<!-- trellis-session: v=3 fp=82cb36fdb9f8a43c -->
+
+**Date**: 2026-11-27
+**Task**: 修复 M2 模型断流与取消
+**Branch**: `main`
+
+### Summary
+
+异步模型客户端施加 15 秒总时限，断流归入模型错误。Main 在取消和停机时先关闭请求，再确认取消或释放尝试。11 项回归测试通过。
+Topics: [docs/01-项目建设规划书.md](../../../docs/01-%E9%A1%B9%E7%9B%AE%E5%BB%BA%E8%AE%BE%E8%A7%84%E5%88%92%E4%B9%A6.md)
+
+### Git Commits
+
+(No associated commits)

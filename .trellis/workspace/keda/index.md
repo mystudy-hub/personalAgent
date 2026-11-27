@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 11
+- **Total Sessions**: 14
 - **Last Active**: 2026-11-27
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~194 | Active |
+| `journal-1.md` | ~245 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,9 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-11-27 | 修复 M2 模型断流与取消 | - | `main` |
+| 13 | 2026-11-27 | 确认 M3 Windows 控制服务与专用 WSL2 Worker | - | `main` |
+| 12 | 2026-11-27 | 完成 M2 Agent 协作与审查验收 | - | `main` |
 | 11 | 2026-11-27 | 完成 M1 任务底座与重启验收 | - | `main` |
 | 10 | 2026-11-27 | Windows MXC 基础沙箱复验通过 | - | `main` |
 | 9 | 2026-11-27 | 完成 M0 WSL2 样例集成验收 | - | `main` |
