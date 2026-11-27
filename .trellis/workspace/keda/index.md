@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
+- **Total Sessions**: 11
 - **Last Active**: 2026-11-27
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~177 | Active |
+| `journal-1.md` | ~194 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-11-27 | 完成 M1 任务底座与重启验收 | - | `main` |
 | 10 | 2026-11-27 | Windows MXC 基础沙箱复验通过 | - | `main` |
 | 9 | 2026-11-27 | 完成 M0 WSL2 样例集成验收 | - | `main` |
 | 8 | 2026-11-27 | M0 远端写入边界与真实 CSV 候选复验 | - | `main` |

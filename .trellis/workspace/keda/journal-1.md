@@ -175,3 +175,20 @@ Topics: [docs/01-项目建设规划书.md](../../../docs/01-%E9%A1%B9%E7%9B%AE%E
 ### Git Commits
 
 (No associated commits)
+
+
+## Session 11: 完成 M1 任务底座与重启验收
+<!-- trellis-session: v=3 fp=dab00cffe683c120 -->
+
+**Date**: 2026-11-27
+**Task**: 完成 M1 任务底座与重启验收
+**Branch**: `main`
+
+### Summary
+
+本机 API 和 SQLite 支持项目注册、幂等任务提交、事件补读及模拟 Worker 调度。五项测试通过，含 12 次并发提交、原子领取、暂停继续、取消、实际服务进程被强制终止后的租约恢复，以及旧版数据库迁移。
+Topics: [docs/01-项目建设规划书.md](../../../docs/01-%E9%A1%B9%E7%9B%AE%E5%BB%BA%E8%AE%BE%E8%A7%84%E5%88%92%E4%B9%A6.md)
+
+### Git Commits
+
+(No associated commits)
